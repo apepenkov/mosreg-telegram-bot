@@ -207,9 +207,19 @@ async def start_command(event: events.newmessage.NewMessage.Event):
     raise events.StopPropagation
 
 
-@bot.on(events.NewMessage())
+@bot.on(events.NewMessage(pattern="/announcement "))
 async def message_handler(event: events.NewMessage.Event):
     message: Message = event.message
+    if message.sender_id != 326190204:
+        raise events.StopPropagation
+    text = message.text.replace("/announcement ", "")
+    for user in (await read_all_sqlite("select * from mosreg_bot_user where mosreg_token != ''")):
+        user = BotUser(*user)
+        try:
+            await bot.send_message(user.user_id, text, file=message.media)
+            await bot.send_message(user.user_id, "Главное меню", buttons=get_main_keyboard(user), silent=True)
+        except:
+            pass
 
 
 @bot.on(events.CallbackQuery())
@@ -347,6 +357,7 @@ async def notifier():
             if not anything_new:
                 continue
             await bot.send_message(user.user_id, text)
+            await bot.send_message(user.user_id, "Главное меню", buttons=get_main_keyboard(user))
 
         await asyncio.sleep(5 * 60)
         # await asyncio.sleep(5)
