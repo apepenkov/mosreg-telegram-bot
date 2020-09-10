@@ -1,5 +1,6 @@
 import requests_async as requests
 import datetime
+from typing import List
 
 base_api_url = "https://api.school.mosreg.ru"
 v = "v2.0"
@@ -330,6 +331,10 @@ class Mark:
         self.mood: str = mood
         self.use_avg_calc: bool = use_avg_calc
 
+    @property
+    def timestamp(self) -> int:
+        return int(datetime.datetime.fromisoformat(self.date.split('T')[0]).timestamp())
+
 
 class LessonSubject:
     # noinspection PyShadowingBuiltins
@@ -626,7 +631,7 @@ async def get_context(access_token, user_id) -> [Context, MosregNotFoundExceptio
         raise exception_from_response(r)
 
 
-async def get_reporting_periods(access_token, edu_grp) -> [[ReportingPeriod], MosregException]:
+async def get_reporting_periods(access_token, edu_grp) -> [List[ReportingPeriod], MosregException]:
     headers = {
         'Accept': 'application/json',
         'Access-Token': access_token,
@@ -658,7 +663,7 @@ async def get_homework_period(access_token, person: int, school: int, start_date
 
 
 async def get_marks_period(access_token, person: int, group: int, start_date: [int, str], end_date: [int, str]) \
-        -> [[Mark], MosregException]:
+        -> [List[Mark], MosregException]:
     headers = {
         'Accept': 'application/json',
         'Access-Token': access_token,
@@ -675,7 +680,7 @@ async def get_marks_period(access_token, person: int, group: int, start_date: [i
 
 
 async def get_lessons_period(access_token, group: int, start_date: [int, str], end_date: [int, str]) \
-        -> [[Lesson], MosregException]:
+        -> [List[Lesson], MosregException]:
     headers = {
         'Accept': 'application/json',
         'Access-Token': access_token,

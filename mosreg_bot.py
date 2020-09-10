@@ -12,6 +12,7 @@ import sqlite3
 import json
 import os
 
+from typing import List, Dict
 import mosreg_api
 
 loop = asyncio.get_event_loop()
@@ -46,25 +47,32 @@ async def exec_sqlite(sql, *args):
 
 
 class BotUser:
-    def __init__(self, user_id, mosreg_token, payload, value, access_hash):
+    # ignore fields_in, that's for my DB class generation script
+    fields_in = {'user_id': 'int', 'mosreg_token': 'str', 'payload': 'str', 'value': 'dict', 'access_hash': 'str',
+                 'notify': 'bool'}
+
+    def __init__(self, user_id, mosreg_token, payload, value, access_hash, notify):
+        self._user_id: int = user_id
         self.user_id: int = user_id
-        self.mosreg_token: str = str(mosreg_token)
-        self.payload: str = str(payload)
+        self.mosreg_token: str = mosreg_token
+        self.payload: str = payload
         self.value: dict = json.loads(value)
-        self.access_hash: int = access_hash
+        self.access_hash: str = access_hash
+        self.notify: bool = bool(notify)
 
     async def push_changes(self):
         await exec_sqlite(
-            "UPDATE mosreg_bot_user SET `mosreg_token` = ?, `payload` = ?, `value` = ?, `access_hash` = ? WHERE user_id = ?",
-            self.mosreg_token, self.payload, json.dumps(self.value), self.access_hash, self.user_id)
+            "UPDATE mosreg_bot_user SET `user_id` = ?, `mosreg_token` = ?, `payload` = ?, `value` = ?, `access_hash` = "
+            "?, `notify` = ? WHERE `user_id` = ?",
+            self.user_id, self.mosreg_token, self.payload, json.dumps(self.value), self.access_hash, self.notify,
+            self._user_id)
 
 
 async def get_user(in_db_id: int):
     res = await read_one_sqlite("SELECT * FROM mosreg_bot_user WHERE user_id = ?", in_db_id)
     if res is None:
         return None
-    else:
-        return BotUser(*res)
+    return BotUser(*res)
 
 
 bot = TelegramClient("bot_" + scriptName, api_id, api_hash, app_version=app_version, device_model=device_model,
@@ -117,7 +125,7 @@ async def get_text_of_marks_period(user: BotUser, start_time, end_time):
         lesson_map.update({lesson.id: lesson})
     marks = await client.get_marks_period(start_time, end_time)
     for mark in marks:
-        ts = datetime.datetime.fromisoformat(mark.date.split('T')[0]).timestamp()
+        ts = mark.timestamp
         if ts not in days:
             days.update({ts: {}})
         lesson = lesson_map[mark.lesson]
@@ -139,6 +147,20 @@ async def get_text_of_marks_period(user: BotUser, start_time, end_time):
     return full_text
 
 
+async def get_marks_period(user: BotUser, start_time, end_time) -> List[Dict]:
+    client = mosreg_api.MosregClient(user.mosreg_token)
+    lessons = await client.get_lessons_period(start_time, end_time)
+    lesson_map = {}
+    for lesson in lessons:
+        lesson_map.update({lesson.id: lesson})
+    marks = await client.get_marks_period(start_time, end_time)
+    out_marks: List[Dict] = []
+    # mark: Mark, lesson: Lesson
+    for mark in marks:
+        out_marks.append({'mark': mark, 'lesson': lesson_map[mark.lesson]})
+    return out_marks
+
+
 def get_main_keyboard(user: BotUser):
     if not user.mosreg_token:
         kb = [Button.url("🔗Привязать ШП🔗", f"https://login.school.mosreg.ru/oauth2?response_type=token&client_id="
@@ -157,7 +179,9 @@ def get_main_keyboard(user: BotUser):
                             f"594df05cfea34e66994960ae72a2150d&scope=EducationalInfo,CommonInfo,"
                             f"SocialInfo,Files,Wall,Messages,FriendsAndRelatives&redirect_uri"
                             f"=http://185.185.126.24:8050/get_request&state={user.user_id}&cc_key=")],
-                [Button.inline("➖Отвязать ШП➖", "unlink")]
+                [Button.inline("➖Отвязать ШП➖", "unlink")],
+                [Button.inline("Включить уведомления об оценках" if not user.notify else
+                               "Выключить уведомления об оценках", "notify")],
             ]
     return kb
 
@@ -188,7 +212,7 @@ async def message_handler(event: events.NewMessage.Event):
     message: Message = event.message
 
 
-@bot.on(events.CallbackQuery)
+@bot.on(events.CallbackQuery())
 async def callback(event: CallbackQuery.Event):
     data: str = event.data.decode("UTF-8")
     main_menu_button = [Button.inline("🔙Главное меню🏘", "main_menu")]
@@ -276,30 +300,75 @@ async def callback(event: CallbackQuery.Event):
         await event.respond("Выберите период Оценок", buttons=marks_menu_kb)
     elif data == "marks_prev_week":
         await event.answer("Получаю данные...")
-        today_plus_seven = datetime.date.today() - datetime.timedelta(days=7)
-        next_monday = today_plus_seven - datetime.timedelta(days=today_plus_seven.weekday())
-        next_next_monday = next_monday + datetime.timedelta(days=6)
-        text = await get_text_of_marks_period(user, next_monday.isoformat(), next_next_monday.isoformat())
+        today_minus_seven = datetime.date.today() - datetime.timedelta(days=7)
+        prev_prev_monday = today_minus_seven - datetime.timedelta(days=today_minus_seven.weekday())
+        prev_monday = prev_prev_monday + datetime.timedelta(days=6)
+        text = await get_text_of_marks_period(user, prev_prev_monday.isoformat(), prev_monday.isoformat())
         await event.edit(text, buttons=None, link_preview=False)
         await event.respond("Выберите период Оценок", buttons=marks_menu_kb)
     elif data == "unlink":
         user.mosreg_token = ""
         await user.push_changes()
         await event.edit("ШП отвязан.", buttons=get_main_keyboard(user))
+    elif data == "notify":
+        user.notify = not user.notify
+        await user.push_changes()
+        await event.edit("Изменено", buttons=get_main_keyboard(user))
+
+
+async def notifier():
+    were_marks_all = {}
+    while True:
+        for user in (await read_all_sqlite("select * from mosreg_bot_user where notify = 1")):
+            today_minus_seven = datetime.date.today() - datetime.timedelta(days=7)
+            prev_prev_monday = today_minus_seven - datetime.timedelta(days=today_minus_seven.weekday())
+            this_monday = datetime.date.today() - datetime.timedelta(days=datetime.date.today().weekday())
+            next_monday = this_monday + datetime.timedelta(days=6)
+
+            user = BotUser(*user)
+            new_marks = await get_marks_period(user, prev_prev_monday.isoformat(), next_monday.isoformat())
+            if user.user_id not in were_marks_all:
+                were_marks_all.update({user.user_id: [x['mark'].__dict__ for x in new_marks]})
+                continue
+            were_marks = were_marks_all[user.user_id].copy()
+            were_marks_all.update({user.user_id: [x['mark'].__dict__ for x in new_marks]})
+            if were_marks == new_marks:
+                continue
+            anything_new = False
+            text = "Новые оценки:\n\n"
+            for new_mark in new_marks:
+                if new_mark['mark'].__dict__ in were_marks:
+                    continue
+                anything_new = True
+                mark: mosreg_api.Mark = new_mark['mark']
+                lesson: mosreg_api.Lesson = new_mark['lesson']
+                day = datetime.datetime.fromisoformat(lesson.date.split('T')[0]).strftime('%d/%m/%Y')
+                text += f"{day}) **{lesson.subject.name}** - {mark.text_value}\n"
+            if not anything_new:
+                continue
+            await bot.send_message(user.user_id, text)
+
+        await asyncio.sleep(5 * 60)
+        # await asyncio.sleep(5)
 
 
 async def main():
     print('Preparing database...')
-    await exec_sqlite("CREATE TABLE IF NOT EXISTS mosreg_bot_user (`user_id` INTEGER DEFAULT 0 PRIMARY KEY ,"
-                      " `mosreg_token` TEXT DEFAULT '', `payload` TEXT DEFAULT '', `value` TEXT DEFAULT '{}', "
-                      "`access_hash` INTEGER DEFAULT 0)")
+    await exec_sqlite(
+        "CREATE TABLE IF NOT EXISTS mosreg_bot_user (`user_id` INTEGER DEFAULT 0 PRIMARY KEY, `mosreg_token` TEXT "
+        "DEFAULT '', `payload` TEXT DEFAULT '', `value` TEXT DEFAULT '{}', `access_hash` TEXT DEFAULT '', `notify` "
+        "BOOLEAN DEFAULT 0)")
+    try:
+        await exec_sqlite("alter table mosreg_bot_user add notify BOOLEAN default 0;")
+    except:
+        pass
     print('Starting bot...')
     await bot.start()
     print('Starting client')
     bot_user = await bot.get_me()
     print(f"Authorized bot as @{bot_user.username}")
     print('Started')
-    await asyncio.gather(bot.run_until_disconnected())
+    await asyncio.gather(bot.run_until_disconnected(), notifier())
 
 
 loop.run_until_complete(main())
