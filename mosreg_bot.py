@@ -329,35 +329,39 @@ async def callback(event: CallbackQuery.Event):
 async def notifier():
     were_marks_all = {}
     while True:
-        for user in (await read_all_sqlite("select * from mosreg_bot_user where notify = 1")):
-            today_minus_seven = datetime.date.today() - datetime.timedelta(days=7)
-            prev_prev_monday = today_minus_seven - datetime.timedelta(days=today_minus_seven.weekday())
-            this_monday = datetime.date.today() - datetime.timedelta(days=datetime.date.today().weekday())
-            next_monday = this_monday + datetime.timedelta(days=6)
+        try:
+            for user in (await read_all_sqlite("select * from mosreg_bot_user where notify = 1 and mosreg_token != ''")):
+                today_minus_seven = datetime.date.today() - datetime.timedelta(days=7)
+                prev_prev_monday = today_minus_seven - datetime.timedelta(days=today_minus_seven.weekday())
+                this_monday = datetime.date.today() - datetime.timedelta(days=datetime.date.today().weekday())
+                next_monday = this_monday + datetime.timedelta(days=6)
 
-            user = BotUser(*user)
-            new_marks = await get_marks_period(user, prev_prev_monday.isoformat(), next_monday.isoformat())
-            if user.user_id not in were_marks_all:
-                were_marks_all.update({user.user_id: [x['mark'].__dict__ for x in new_marks]})
-                continue
-            were_marks = were_marks_all[user.user_id].copy()
-            were_marks_all.update({user.user_id: [x['mark'].__dict__ for x in new_marks]})
-            if were_marks == new_marks:
-                continue
-            anything_new = False
-            text = "Новые оценки:\n\n"
-            for new_mark in new_marks:
-                if new_mark['mark'].__dict__ in were_marks:
+                user = BotUser(*user)
+                new_marks = await get_marks_period(user, prev_prev_monday.isoformat(), next_monday.isoformat())
+                if user.user_id not in were_marks_all:
+                    were_marks_all.update({user.user_id: [x['mark'].__dict__ for x in new_marks]})
                     continue
-                anything_new = True
-                mark: mosreg_api.Mark = new_mark['mark']
-                lesson: mosreg_api.Lesson = new_mark['lesson']
-                day = datetime.datetime.fromisoformat(lesson.date.split('T')[0]).strftime('%d/%m/%Y')
-                text += f"{day}) **{lesson.subject.name}** - {mark.text_value}\n"
-            if not anything_new:
-                continue
-            await bot.send_message(user.user_id, text)
-            await bot.send_message(user.user_id, "Главное меню", buttons=get_main_keyboard(user))
+                were_marks = were_marks_all[user.user_id].copy()
+                were_marks_all.update({user.user_id: [x['mark'].__dict__ for x in new_marks]})
+                if were_marks == new_marks:
+                    continue
+                anything_new = False
+                text = "Новые оценки:\n\n"
+                for new_mark in new_marks:
+                    if new_mark['mark'].__dict__ in were_marks:
+                        continue
+                    anything_new = True
+                    mark: mosreg_api.Mark = new_mark['mark']
+                    lesson: mosreg_api.Lesson = new_mark['lesson']
+                    day = datetime.datetime.fromisoformat(lesson.date.split('T')[0]).strftime('%d/%m/%Y')
+                    text += f"{day}) **{lesson.subject.name}** - {mark.text_value}\n"
+                if not anything_new:
+                    continue
+                await bot.send_message(user.user_id, text)
+                await bot.send_message(user.user_id, "Главное меню", buttons=get_main_keyboard(user))
+        except mosreg_api.MosregException:
+            await asyncio.sleep(1*60)
+
 
         await asyncio.sleep(5 * 60)
         # await asyncio.sleep(5)

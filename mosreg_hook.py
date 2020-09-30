@@ -39,17 +39,25 @@ async def exec_sqlite(sql, *args):
 
 
 class BotUser:
-    def __init__(self, user_id, mosreg_token, payload, value, access_hash):
+    # ignore fields_in, that's for my DB class generation script
+    fields_in = {'user_id': 'int', 'mosreg_token': 'str', 'payload': 'str', 'value': 'dict', 'access_hash': 'str',
+                 'notify': 'bool'}
+
+    def __init__(self, user_id, mosreg_token, payload, value, access_hash, notify):
+        self._user_id: int = user_id
         self.user_id: int = user_id
-        self.mosreg_token: str = str(mosreg_token)
-        self.payload: str = str(payload)
+        self.mosreg_token: str = mosreg_token
+        self.payload: str = payload
         self.value: dict = json.loads(value)
-        self.access_hash: int = access_hash
+        self.access_hash: str = access_hash
+        self.notify: bool = bool(notify)
 
     async def push_changes(self):
         await exec_sqlite(
-            "UPDATE mosreg_bot_user SET `mosreg_token` = ?, `payload` = ?, `value` = ?, `access_hash` = ? WHERE user_id = ?",
-            self.mosreg_token, self.payload, json.dumps(self.value), self.access_hash, self.user_id)
+            "UPDATE mosreg_bot_user SET `user_id` = ?, `mosreg_token` = ?, `payload` = ?, `value` = ?, `access_hash` = "
+            "?, `notify` = ? WHERE `user_id` = ?",
+            self.user_id, self.mosreg_token, self.payload, json.dumps(self.value), self.access_hash, self.notify,
+            self._user_id)
 
 
 async def get_user(in_db_id: int):
